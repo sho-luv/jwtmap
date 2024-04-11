@@ -499,37 +499,6 @@ def print_jwt(request: str) -> List[Tuple[str, str]]:
     
     return rows    
 
-def print_question_response(question: str, answer: bool) -> None:
-    console = Console()
-
-    if answer:
-        response = "[green]Yes[/green]"
-    else:
-        response = "[red]No[/red]"
-    
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("Question", style="dim")
-    table.add_column("Response", style="dim")
-    table.add_row(f"[white]{question}[/white]", response)
-    console.print(table)
-
-def print_question_response(question: str, answer: bool) -> List[Tuple[str, str]]:
-    """
-    Prepares a question and its response as a row for the table.
-
-    Args:
-        question (str): The question text.
-        answer (bool): The answer to the question.
-
-    Returns:
-        List[Tuple[str, str]]: A list containing a tuple for the table row.
-    """
-    # Determine the response text based on the answer boolean
-    response = "[bold green]Yes[/bold green]" if answer else "[bold red]No[/bold red]"
-
-    # Return a list with a single tuple containing the question and its response
-    return [(question, response)]
-
 # Function to convert Unix timestamp to readable date in UTC
 def timestamp_to_utc(ts):
     return datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S (UTC)')
@@ -586,22 +555,28 @@ def process_request(request_content: str, verbose: bool, http: bool) -> None:
 
             iat_to_exp_difference = calculate_difference(my_token.decoded_payload['iat'], my_token.decoded_payload['exp'])
             print("Seen timestamps:")
-            print("    [*] iat was seen")
-            print(f"    [*] exp is later than iat by: {iat_to_exp_difference}")
+            print("[green][+][/green] iat was seen")
+            print(f"[green][+][/green] exp is later than iat by: {iat_to_exp_difference}")
 
             # Check if the token is expired
             current_timestamp = int(datetime.utcnow().timestamp())
             if my_token.decoded_payload['exp'] < current_timestamp:
-                print("    [bold red][-] TOKEN IS EXPIRED![/bold red]")
+                print("[bold red][-] TOKEN IS EXPIRED![/bold red]")
             else:
-                print("    [bold green][+] TOKEN IS STILL VALID![/bold green]")
+                print("[bold green][+] TOKEN IS STILL VALID![/bold green]")
 
+            print("\n[bold white]Security Checks...[/bold white]\n")
             # Check and print if JWT is required
-            # jwt_required_rows = print_question_response("Is JWT required?", is_jwt_required(request_content, original_response, args.verbose, args.http))
+            if is_jwt_required(request_content, original_response, verbose, http):
+                print(f"[bold green][+] JWT is required for HTTP request to {url}[/bold green]")
+            else:
+                print(f"[bold red][+] JWT not needed for HTTP request to {url}[/bold red]")
 
             # Check and print if JWT signature is checked
-            # jwt_signature_checked_rows = print_question_response("Is JWT signature checked?", 
-            #                                                    is_jwt_signature_checked(request_content, original_response, args.verbose, args.http))
+            if is_jwt_signature_checked(request_content, original_response, verbose, http):
+                print(f"[bold green][+] JWT signature is checked for HTTP request to {url}[/bold green]")
+            else:
+                print(f"[bold red][+] JWT signature is not checked for HTTP request to {url}[/bold red]")   
         
         else:
             print("No JWT Token Found")
