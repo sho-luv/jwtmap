@@ -570,13 +570,13 @@ def process_request(request_content: str, verbose: bool, http: bool) -> None:
             if is_jwt_required(request_content, original_response, verbose, http):
                 print(f"[bold green][+] JWT is required for HTTP request to {url}[/bold green]")
             else:
-                print(f"[bold red][+] JWT not needed for HTTP request to {url}[/bold red]")
+                print(f"[bold red][-] JWT not needed for HTTP request to {url}[/bold red]")
 
             # Check and print if JWT signature is checked
             if is_jwt_signature_checked(request_content, original_response, verbose, http):
                 print(f"[bold green][+] JWT signature is checked for HTTP request to {url}[/bold green]")
             else:
-                print(f"[bold red][+] JWT signature is not checked for HTTP request to {url}[/bold red]")   
+                print("[bold red][-] JWT accepted without signature! Changing JWT payloads should work![/bold red]")   
         
         else:
             print("No JWT Token Found")
