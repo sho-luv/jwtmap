@@ -1,4 +1,5 @@
 import re
+import os
 import json
 import shlex
 import base64
@@ -7,6 +8,7 @@ import requests
 import importlib.util
 from textwrap import dedent
 from enum import Enum, auto
+from datetime import datetime, timedelta
 from typing import Optional, Tuple, Dict, List
 
 rich_installed = importlib.util.find_spec('rich') is not None
@@ -19,9 +21,39 @@ if rich_installed:
 else:
     console = None
 
+#  todo - check entire request and response for JWTs
+#  todo - check for JWT in headers and body
+
 class RequestType(Enum):
     CURL = auto()
     HTTP = auto()
+
+class Token:
+    def __init__(self, header: str, payload: str, signature: str):
+        self.header = header
+        self.payload = payload
+        self.signature = signature
+        self.algorithm = self.decode(header).get('alg')
+        # Decoded versions
+        self.decoded_header = self.decode(header)
+        self.decoded_payload = self.decode(payload)
+
+    @staticmethod
+    def set_url(self, url: str):
+        self.url = url
+
+    @staticmethod
+    def decode(data: str):
+        # Assuming the data is base64 encoded JSON
+        decoded_bytes = base64.urlsafe_b64decode(data + '==')  # Padding correction
+        decoded_str = decoded_bytes.decode('utf-8')
+        return json.loads(decoded_str)
+
+def parse_jwt(jwt: str) -> Token:
+    parts = jwt.split('.')
+    if len(parts) != 3:
+        raise ValueError("Invalid JWT format. JWT should have 3 parts separated by '.'")
+    return Token(parts[0], parts[1], parts[2])
 
 def get_jwt_encryption_type(jwt: str) -> Optional[str]:
     """
@@ -181,7 +213,8 @@ def execute_curl_command(command: str, http: bool) -> Tuple[Optional[requests.Re
 
 def get_jwt_from_request(request: str) -> Optional[str]:
     """
-    Extracts the JWT (JSON Web Token) from the given HTTP request.
+    Extracts the JWT (JSON Web Token) from the given HTTP request. This function supports both curl commands and HTTP requests.
+    NOTE!!!!: Currently, only Bearer tokens are supported.
 
     Args:
         request (str): The HTTP request containing the JWT.
@@ -209,6 +242,20 @@ def remove_jwt_from_request(request: str) -> str:
     return request
 
 def execute_http_request(request: str, http: bool) -> Tuple[Optional[requests.Response], Dict[str, str]]:
+    """
+    Executes an HTTP request based on the provided request string.
+
+    Args:
+        request (str): The HTTP request string.
+        http (bool): A flag indicating whether to use HTTP or HTTPS.
+
+    Returns:
+        Tuple[Optional[requests.Response], Dict[str, str]]: A tuple containing the response object and the headers.
+
+    Raises:
+        ValueError: If an invalid scheme is specified in the 'Scheme' header.
+
+    """
     try:
         lines = request.split('\n')
         method, path, _ = lines[0].split()
@@ -250,6 +297,7 @@ def execute_http_request(request: str, http: bool) -> Tuple[Optional[requests.Re
         print(f"[bold red]Error:[/bold red] An error occurred while making the request to {url}. {str(e)}")
         print(f"[red]Error: An error occurred while making the request to {url}. {str(e)}[/red]")
         return None, None
+    
 
 def is_jwt_required(request: str, original_response: requests.Response, verbose: bool, http: bool) -> bool:
     """
@@ -482,66 +530,106 @@ def print_question_response(question: str, answer: bool) -> List[Tuple[str, str]
     # Return a list with a single tuple containing the question and its response
     return [(question, response)]
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Execute curl command or HTTP request from a file.")
-    parser.add_argument("file", help="Path to the file containing the curl command or HTTP request.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode to see the request and response.")
-    parser.add_argument("--http", action="store_true", help="Check HTTP, Default is HTTPS.")
-    args = parser.parse_args()
+# Function to convert Unix timestamp to readable date in UTC
+def timestamp_to_utc(ts):
+    return datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S (UTC)')
 
+# Function to calculate the difference between two timestamps
+def calculate_difference(ts1, ts2):
+    diff = datetime.utcfromtimestamp(ts2) - datetime.utcfromtimestamp(ts1)
+    days, seconds = diff.days, diff.seconds
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    return f"{days} days, {hours} hours, {minutes} mins"
+
+def process_file(file_path):
     try:
-        with open(args.file, "r") as file:
-            request_content = file.read().strip()
+        with open(file_path, "r") as file:
+            return file.read().strip()
     except IOError as e:
         print(f"Error opening file: {e}")
         return
 
-    # Initialize the console and the final table
-    console = Console()
-    final_table = Table(show_header=True, header_style="bold magenta")
-    final_table.add_column("Description", style="dim", width=50)
-    final_table.add_column("Content", style="dim", width=50)
+def process_request(request_content: str, verbose: bool, http: bool) -> None:
 
     # Process the request and get the response
     original_response, _ = None, {}
-    if is_curl_command(request_content) or is_http_request(request_content):
-        original_response, _ = execute_request(request_content, args.http)
-    
-    if original_response:
-        # Add request and response if verbose is enabled
-        if args.verbose:
-            request_response_rows = print_request_response(request_content, original_response, args.verbose)
-            for row in request_response_rows:
-                final_table.add_row(*row)
+    curl = is_curl_command(request_content)
+    http = is_http_request(request_content)
 
-    # Always check and print JWT information
-    # print_jwt (request_content)
-
-    jwt_rows = print_jwt(request_content)
-    for row in jwt_rows:
-        final_table.add_row(*row)
+    if curl or http:
+        original_response, _ = execute_request(request_content, http)
+    else:
+        print(f"Unable to identify file as valid request. Please check {args.file} to ensure its a valid request")
+        return
 
     # Only proceed with JWT checks if the original response was successfully obtained
     if original_response:
+        url = original_response.url
+        print(f"\n[green][+] URL:[/green] {url}")
         jwt_token = get_jwt_from_request(request_content)
         if jwt_token:
-            encryption_type = get_jwt_encryption_type(jwt_token)
-            encryption_type_row = ("JWT Encryption Type", encryption_type if encryption_type else "Not available")
-            final_table.add_row(*row)
+            print("[green][+] JWT:[/green]", jwt_token)
+            my_token = parse_jwt(jwt_token)
+            print("\n[bold white]Token Header Values...[/bold white]\n")            
+            for key, value in my_token.decoded_header.items():
+                print(f"[green][+][/green] {key} = \"{value}\"")
 
-        # Check and print if JWT is required
-        jwt_required_rows = print_question_response("Is JWT required?", is_jwt_required(request_content, original_response, args.verbose, args.http))
-        for row in jwt_required_rows:
-            final_table.add_row(*row)
+            print("\n[bold white]Token Payload Values...[/bold white]\n")
+            for key, value in my_token.decoded_payload.items():
+                if key == "exp" or key == "iat" or key == "nbf":
+                    print(f"[green][+][/green] {key} = {value} ==> TIMESTAMP = {timestamp_to_utc(value)}")
+                else:       
+                    print(f"[green][+][/green] {key} = \"{value}\"")
 
-        # Check and print if JWT signature is checked
-        jwt_signature_checked_rows = print_question_response("Is JWT signature checked?", 
-                                                             is_jwt_signature_checked(request_content, original_response, args.verbose, args.http))
-        for row in jwt_signature_checked_rows:
-            final_table.add_row(*row)
+            print("\n[bold white]Seen Timestamps...[/bold white]\n")
 
-    # Print the final table
-    console.print(final_table)
+            iat_to_exp_difference = calculate_difference(my_token.decoded_payload['iat'], my_token.decoded_payload['exp'])
+            print("Seen timestamps:")
+            print("    [*] iat was seen")
+            print(f"    [*] exp is later than iat by: {iat_to_exp_difference}")
+
+            # Check if the token is expired
+            current_timestamp = int(datetime.utcnow().timestamp())
+            if my_token.decoded_payload['exp'] < current_timestamp:
+                print("    [bold red][-] TOKEN IS EXPIRED![/bold red]")
+            else:
+                print("    [bold green][+] TOKEN IS STILL VALID![/bold green]")
+
+            # Check and print if JWT is required
+            # jwt_required_rows = print_question_response("Is JWT required?", is_jwt_required(request_content, original_response, args.verbose, args.http))
+
+            # Check and print if JWT signature is checked
+            # jwt_signature_checked_rows = print_question_response("Is JWT signature checked?", 
+            #                                                    is_jwt_signature_checked(request_content, original_response, args.verbose, args.http))
+        
+        else:
+            print("No JWT Token Found")
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Execute curl command or HTTP request from a file.")
+    parser.add_argument("path", help="Path to the file or directory containing the curl command(s) or HTTP request(s).")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode to see the request and response.")
+    parser.add_argument("--http", action="store_true", help="Check HTTP, Default is HTTPS.")
+    args = parser.parse_args()
+
+
+    if os.path.isdir(args.path):
+        # If it's a directory, iterate over each file in the directory
+        for filename in os.listdir(args.path):
+            file_path = os.path.join(args.path, filename)
+            if os.path.isfile(file_path):  # Ensuring it's a file
+                print(f"\nProcessing {file_path}...")
+                request_content = process_file(file_path)
+                process_request(request_content, args.verbose, args.http)
+    elif os.path.isfile(args.path):
+        # If it's a single file, process it directly
+        request_content = process_file(args.path)
+        process_request(request_content, args.verbose, args.http)
+    else:
+        print(f"The specified path does not exist: {args.path}")
+
+
 
 if __name__ == "__main__":
     main()
