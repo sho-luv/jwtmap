@@ -1,6 +1,7 @@
 import re
 import os
 import json
+import pytz
 import httpx
 import shlex
 import base64
@@ -9,7 +10,7 @@ import requests
 import importlib.util
 from textwrap import dedent
 from enum import Enum, auto
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Tuple, Dict, List
 
 rich_installed = importlib.util.find_spec('rich') is not None
@@ -484,13 +485,32 @@ def print_jwt(request: str) -> List[Tuple[str, str]]:
 def timestamp_to_utc(ts):
     return datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S (UTC)')
 
-# Function to calculate the difference between two timestamps
-def calculate_difference(ts1, ts2):
-    diff = datetime.fromtimestamp(ts2) - datetime.fromtimestamp(ts1)
-    days, seconds = diff.days, diff.seconds
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    return f"{days} days, {hours} hours, {minutes} mins"
+def timestamp_to_local(timestamp, timezone_str='America/Los_Angeles'):
+    local_tz = pytz.timezone(timezone_str)
+    local_time = datetime.fromtimestamp(timestamp, local_tz)
+    return local_time.strftime('%B %d, %Y, at %I:%M:%S %p')
+
+def calculate_difference(current_timestamp, exp_timestamp):
+    difference = exp_timestamp - current_timestamp
+    return f"{difference} seconds"
+
+def format_time_difference(iat, exp):
+    difference = exp - iat
+    time_diff = timedelta(seconds=difference)
+    hours, remainder = divmod(time_diff.total_seconds(), 3600)
+    minutes, _ = divmod(remainder, 60)
+    if hours > 0:
+        return f"{int(hours)} hours {int(minutes)} mins"
+    return f"{int(minutes)} mins"
+
+def format_expired_time(exp, current_timestamp):
+    difference = current_timestamp - exp
+    time_diff = timedelta(seconds=difference)
+    hours, remainder = divmod(time_diff.total_seconds(), 3600)
+    minutes, _ = divmod(remainder, 60)
+    if hours > 0:
+        return f"{int(hours)} hours {int(minutes)} mins"
+    return f"{int(minutes)} mins"
 
 def read_request_file(file_path: str) -> Optional[str]:
     """
@@ -553,24 +573,29 @@ def process_request(request_content: str, verbose: bool, http: bool) -> None:
             print("\n[bold white]Token Payload Values...[/bold white]\n")
             for key, value in my_token.decoded_payload.items():
                 if key == "exp" or key == "iat" or key == "nbf":
-                    print(f"[green][+][/green] {key} = {value} ==> TIMESTAMP = {timestamp_to_utc(value)}")
+                    print(f"[green][+][/green] {key} = {value} ==> TIMESTAMP = {timestamp_to_local(value)}")
                 else:       
                     print(f"[green][+][/green] {key} = \"{value}\"")
 
             if 'exp' in my_token.decoded_payload:
                 print("\n[bold white]Expiration Timestamps...[/bold white]\n")
                 current_timestamp = int(datetime.now().timestamp())
-                print(f"[green][+][/green] Current timestamp: {current_timestamp} ==> {timestamp_to_utc(current_timestamp)}")
-                exp_to_current_difference = calculate_difference(current_timestamp, my_token.decoded_payload['exp'])
-                print("[green][+][/green] exp was seen")
-                print(f"[green][+][/green] exp is later than current timestamp by: {exp_to_current_difference}")
+                issued_at = my_token.decoded_payload.get('iat', 0)
+                expiration = my_token.decoded_payload['exp']
+                print(f"[green][+][/green] Issued JWT timestamp: {issued_at} ==> {timestamp_to_local(issued_at)}")
+                print(f"[green][+][/green] Expiration date of JWT: {expiration} ==> {timestamp_to_local(expiration)}")
+                print(f"[green][+][/green] Current date and time: {current_timestamp} ==> {timestamp_to_local(current_timestamp)}")
+                
+                token_validity = format_time_difference(issued_at, expiration)
+                print(f"[green][+][/green] JWT Token valid for {token_validity}")
 
                 # Check if the token is expired
-                current_timestamp = int(datetime.now().timestamp())
-                if my_token.decoded_payload['exp'] < current_timestamp:
-                    print("[bold red][-] TOKEN IS EXPIRED![/bold red]")
+                if expiration < current_timestamp:
+                    expired_duration = format_expired_time(expiration, current_timestamp)
+                    print(f"[bold red][-] TOKEN IS EXPIRED![/bold red] Token has been expired for {expired_duration}")
                 else:
                     print("[bold green][+] TOKEN IS STILL VALID![/bold green]")
+
 
             print("\n[bold white]Security Checks...[/bold white]\n")
             # Check and print if JWT is required
