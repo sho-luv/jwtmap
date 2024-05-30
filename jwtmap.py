@@ -1,6 +1,7 @@
 import re
 import os
 import json
+import httpx
 import shlex
 import base64
 import argparse
@@ -8,7 +9,7 @@ import requests
 import importlib.util
 from textwrap import dedent
 from enum import Enum, auto
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, Tuple, Dict, List
 
 rich_installed = importlib.util.find_spec('rich') is not None
@@ -241,7 +242,7 @@ def remove_jwt_from_request(request: str) -> str:
         return modified_request
     return request
 
-def execute_http_request(request: str, http: bool) -> Tuple[Optional[requests.Response], Dict[str, str]]:
+def execute_http_request(request: str, http: bool) -> Tuple[Optional[httpx.Response], Dict[str, str]]:
     """
     Executes an HTTP request based on the provided request string.
 
@@ -250,12 +251,13 @@ def execute_http_request(request: str, http: bool) -> Tuple[Optional[requests.Re
         http (bool): A flag indicating whether to use HTTP or HTTPS.
 
     Returns:
-        Tuple[Optional[requests.Response], Dict[str, str]]: A tuple containing the response object and the headers.
+        Tuple[Optional[httpx.Response], Dict[str, str]]: A tuple containing the response object and the headers.
 
     Raises:
         ValueError: If an invalid scheme is specified in the 'Scheme' header.
 
     """
+    print("inside execute http request")
     try:
         lines = request.split('\n')
         method, path, _ = lines[0].split()
@@ -288,48 +290,42 @@ def execute_http_request(request: str, http: bool) -> Tuple[Optional[requests.Re
             payload = '\n'.join(lines[blank_line_index + 1:])
         
         url = f"{scheme}://{headers['Host']}{path}"
-        response = requests.request(method, url, headers=headers, data=payload)
+        response = httpx.request(method, url, headers=headers, data=payload)
         return response, headers
-    except requests.exceptions.ConnectionError as e:
+    except httpx.HTTPStatusError as e:
+        print(f"[bold red]Error:[/bold red] An error occurred while making the request to {url}. {str(e)}")
+        return None, None
+    except httpx.RequestError as e:
         print(f"[red]Error: Unable to connect to the URL {url}. Please check your network connection and ensure the URL is correct.[/red]")
         return None, None
-    except requests.exceptions.RequestException as e:
-        print(f"[bold red]Error:[/bold red] An error occurred while making the request to {url}. {str(e)}")
-        print(f"[red]Error: An error occurred while making the request to {url}. {str(e)}[/red]")
-        return None, None
-    
 
-def is_jwt_required(request: str, original_response: requests.Response, verbose: bool, http: bool) -> bool:
+def is_jwt_required(request: str, original_response: httpx.Response, verbose: bool, http: bool) -> bool:
     """
     Checks if a JWT (JSON Web Token) is required for the given request.
 
     Args:
         request (str): The original HTTP request.
-        original_response (requests.Response): The original response received from the server.
+        original_response (httpx.Response): The original response received from the server.
 
     Returns:
         bool: True if the JWT is required, False otherwise.
     """
 
     modified_request = remove_jwt_from_request(request)
-    # request_type = "curl" if is_curl_command(request) else "http"
     modified_response, _ = execute_request(modified_request, http)
 
     if modified_response is not None:
         print_request_response(modified_request, modified_response, verbose)
 
-        # Check if the response codes match
         if original_response.status_code != modified_response.status_code:
             print(f"Response codes do not match: {original_response.status_code} != {modified_response.status_code}")
             return True
 
-        # Check if the content lengths match
         if 'Content-Length' in modified_response.headers and 'Content-Length' in original_response.headers:
             if modified_response.headers['Content-Length'] != original_response.headers['Content-Length']:
                 print(f"Content lengths do not match: {modified_response.headers['Content-Length']} != {original_response.headers['Content-Length']}")
                 return True
 
-        # Check if the bodies match
         if original_response.text != modified_response.text:
             print("Response bodies do not match:")
             print("Modified response body:")
@@ -342,13 +338,61 @@ def is_jwt_required(request: str, original_response: requests.Response, verbose:
 
     return True # Default to True if the modified request fails
 
-def is_jwt_signature_checked(request: str, original_response: requests.Response, verbose, http: bool) -> bool:
+def execute_request(request: str, http: bool) -> Tuple[Optional[httpx.Response], Dict[str, str]]:
+    """
+    Executes an HTTP request based on the provided request string.
+
+    Args:
+        request (str): The HTTP request string.
+        http (bool): A flag indicating whether to use HTTP or HTTPS.
+
+    Returns:
+        Tuple[Optional[httpx.Response], Dict[str, str]]: A tuple containing the response object and the headers.
+
+    Raises:
+        ValueError: If an invalid scheme is specified in the 'Scheme' header.
+    """
+    try:
+        lines = request.split('\n')
+        method, path, _ = lines[0].split()
+        headers = {}
+        payload = None
+        scheme = 'http' if http else 'https'
+        
+        blank_line_index = next((i for i, line in enumerate(lines) if line.strip() == ''), len(lines))
+        
+        for line in lines[1:blank_line_index]:
+            if ':' in line:
+                key, value = line.split(':', 1)
+                if key.strip().lower() == 'scheme':
+                    scheme = value.strip().lower()
+                    if scheme not in ['http', 'https']:
+                        raise ValueError("Invalid scheme specified. Must be 'http' or 'https'.")
+                else:
+                    headers[key.strip()] = value.strip()
+
+        headers.pop('Scheme', None)
+        
+        if blank_line_index + 1 < len(lines):
+            payload = '\n'.join(lines[blank_line_index + 1:])
+        
+        url = f"{scheme}://{headers['Host']}{path}"
+        response = httpx.request(method, url, headers=headers, data=payload)
+        return response, headers
+    except httpx.RequestError as e:
+        print(f"[red]Error: Unable to connect to the URL {url}. Please check your network connection and ensure the URL is correct.[/red]")
+        return None, None
+    except httpx.HTTPStatusError as e:
+        print(f"[bold red]Error:[/bold red] An error occurred while making the request to {url}. {str(e)}")
+        return None, None
+
+def is_jwt_signature_checked(request: str, original_response: httpx.Response, verbose, http: bool) -> bool:
     """
     Checks if the signature of a JWT (JSON Web Token) is verified by the server.
 
     Args:
         request (str): The original HTTP request.
-        original_response (requests.Response): The original response received from the server.
+        original_response (httpx.Response): The original response received from the server.
 
     Returns:
         bool: True if the JWT signature is checked, False otherwise.
@@ -357,7 +401,6 @@ def is_jwt_signature_checked(request: str, original_response: requests.Response,
     jwt = get_jwt_from_request(request)
 
     if jwt is not None:
-        # Replace the JWT with an invalid one
         invalid_jwt = remove_signature_from_jwt(jwt)
         modified_request = replace_jwt_in_request(request, invalid_jwt)
         modified_response, _ = execute_request(modified_request, http)
@@ -367,19 +410,16 @@ def is_jwt_signature_checked(request: str, original_response: requests.Response,
     if modified_response is not None:
         print_request_response(modified_request, modified_response, verbose)
 
-        # Check if the response codes match
         if original_response.status_code != modified_response.status_code:
             print(f"Response codes do not match: {original_response.status_code} != {modified_response.status_code}")
             return True
 
-        # Check if the content lengths match
         if 'Content-Length' in modified_response.headers and 'Content-Length' in original_response.headers:
             if modified_response.headers['Content-Length'] != original_response.headers['Content-Length']:
                 print(f"Content lengths do not match: {modified_response.headers['Content-Length']} != {original_response.headers['Content-Length']}")
                 return True
 
-        # Check if the bodies match
-        if  original_response.text != modified_response.text:
+        if original_response.text != modified_response.text:
             print("Response bodies do not match:")
             print("Modified response body:")
             print(modified_response.text)
@@ -391,32 +431,7 @@ def is_jwt_signature_checked(request: str, original_response: requests.Response,
 
     return True # Default to True if the modified request fails
 
-# def print_request_response(request: str, response: requests.Response, verbose: bool) -> None:
-#     """
-#     Prints the HTTP request and response in a formatted table.
-
-#     Args:
-#         request (str): The HTTP request.
-#         response (requests.Response): The HTTP response.
-#         verbose (bool): Flag indicating whether to enable verbose mode.
-
-#     Returns:
-#         None
-#     """
-#     if verbose:
-#         console = Console()
-#         table = Table(show_header=True, header_style="bold magenta")
-#         table.add_column("Request", style="dim")
-#         table.add_column("Response", style="dim")
-
-#         response_headers = response.headers
-#         response_text = response.text
-#         response_status_code = response.status_code
-#         formatted_headers = "\n".join([f"{key}: {value}" for key, value in response_headers.items()])
-#         table.add_row(request, f"HTTP/2 {response_status_code} OK\n{formatted_headers}\n\n{response_text}")
-#         console.print(table)  # Print the table
-
-def print_request_response(request: str, response: requests.Response, verbose: bool) -> List[Tuple[str, str]]:
+def print_request_response(request: str, response: httpx.Response, verbose: bool) -> List[Tuple[str, str]]:
     rows = []
     if verbose:
         response_headers = response.headers
@@ -441,40 +456,6 @@ def print_invalid_input_message() -> None:
             Authorization: Bearer <JWT>
     """)
     console.print(message)
-
-# def print_jwt(request: str) -> None:
-#     """
-#     Prints the JWT (JSON Web Token) found in the given request.
-
-#     Args:
-#         request (str): The HTTP request or curl command.
-
-#     Returns:
-#         None
-#     """
-#     console = Console()
-    
-#     # Check if it's a curl command and extract the JWT from the -H option
-#     jwt = get_jwt_from_request(request)
-#     if jwt:
-#         jwt_table = Table(show_header=True, header_style="bold green")
-#         jwt_table.add_column("JWT Found", width=len(jwt), justify="center", overflow="fold")  # Set the width of the column to the length of the JWT
-#         jwt_table.add_row(f"[yellow]{jwt}[/yellow]")
-#         console.print(jwt_table)      # if is_jwt_required(content):
-#     else:
-#         # Check for HTTP requests
-#         jwt = get_jwt_from_request(request)
-#         if jwt:
-#             jwt_table = Table(show_header=True, header_style="bold green")
-#             jwt_table.add_column("JWT Found", width=len(jwt), justify="center", overflow="fold")  # Set the width of the column to the length of the JWT
-#             jwt_table.add_row(f"[yellow]{jwt}[/yellow]")
-#             console.print(jwt_table)      # if is_jwt_required(content):
-#         else:
-#             error_table = Table(show_header=False)
-#             error_table.add_column("Error", style="bold red")
-#             error_table.add_row("No JWT found in the request. The program cannot continue.")
-#             console.print(error_table)        
-#             sys.exit(1)
     
 def print_jwt(request: str) -> List[Tuple[str, str]]:
     """
@@ -505,13 +486,25 @@ def timestamp_to_utc(ts):
 
 # Function to calculate the difference between two timestamps
 def calculate_difference(ts1, ts2):
-    diff = datetime.utcfromtimestamp(ts2) - datetime.utcfromtimestamp(ts1)
+    diff = datetime.fromtimestamp(ts2) - datetime.fromtimestamp(ts1)
     days, seconds = diff.days, diff.seconds
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
     return f"{days} days, {hours} hours, {minutes} mins"
 
-def process_file(file_path):
+def read_request_file(file_path: str) -> Optional[str]:
+    """
+    Read the contents of a file and return them as a string.
+
+    Args:
+        file_path (str): The path to the file to be read.
+
+    Returns:
+        Optional[str]: The contents of the file as a string, or None if there was an error.
+
+    Raises:
+        IOError: If there was an error opening the file.
+    """
     try:
         with open(file_path, "r") as file:
             return file.read().strip()
@@ -520,16 +513,29 @@ def process_file(file_path):
         return
 
 def process_request(request_content: str, verbose: bool, http: bool) -> None:
+    """
+    Process the request and perform JWT checks on the response.
 
+    Args:
+        request_content (str): The content of the request.
+        verbose (bool): Flag indicating whether to print verbose output.
+        http (bool): Flag indicating whether the request is an HTTP request.
+
+    Returns:
+        None
+    """
     # Process the request and get the response
     original_response, _ = None, {}
     curl = is_curl_command(request_content)
     http = is_http_request(request_content)
 
-    if curl or http:
+    if curl:
+    # Assuming you have a separate function to handle curl requests
+        original_response, _ = execute_request(request_content, curl)
+    elif http:
         original_response, _ = execute_request(request_content, http)
     else:
-        print(f"Unable to identify file as valid request. Please check {args.file} to ensure its a valid request")
+        print(f"Unable to identify file as a valid request. Please check {request_content} to ensure it's a valid request.")
         return
 
     # Only proceed with JWT checks if the original response was successfully obtained
@@ -551,19 +557,20 @@ def process_request(request_content: str, verbose: bool, http: bool) -> None:
                 else:       
                     print(f"[green][+][/green] {key} = \"{value}\"")
 
-            print("\n[bold white]Seen Timestamps...[/bold white]\n")
+            if 'exp' in my_token.decoded_payload:
+                print("\n[bold white]Expiration Timestamps...[/bold white]\n")
+                current_timestamp = int(datetime.now().timestamp())
+                print(f"[green][+][/green] Current timestamp: {current_timestamp} ==> {timestamp_to_utc(current_timestamp)}")
+                exp_to_current_difference = calculate_difference(current_timestamp, my_token.decoded_payload['exp'])
+                print("[green][+][/green] exp was seen")
+                print(f"[green][+][/green] exp is later than current timestamp by: {exp_to_current_difference}")
 
-            iat_to_exp_difference = calculate_difference(my_token.decoded_payload['iat'], my_token.decoded_payload['exp'])
-            print("Seen timestamps:")
-            print("[green][+][/green] iat was seen")
-            print(f"[green][+][/green] exp is later than iat by: {iat_to_exp_difference}")
-
-            # Check if the token is expired
-            current_timestamp = int(datetime.utcnow().timestamp())
-            if my_token.decoded_payload['exp'] < current_timestamp:
-                print("[bold red][-] TOKEN IS EXPIRED![/bold red]")
-            else:
-                print("[bold green][+] TOKEN IS STILL VALID![/bold green]")
+                # Check if the token is expired
+                current_timestamp = int(datetime.now().timestamp())
+                if my_token.decoded_payload['exp'] < current_timestamp:
+                    print("[bold red][-] TOKEN IS EXPIRED![/bold red]")
+                else:
+                    print("[bold green][+] TOKEN IS STILL VALID![/bold green]")
 
             print("\n[bold white]Security Checks...[/bold white]\n")
             # Check and print if JWT is required
@@ -595,14 +602,14 @@ def main() -> None:
             file_path = os.path.join(args.path, filename)
             if os.path.isfile(file_path):  # Ensuring it's a file
                 print(f"\nProcessing {file_path}...")
-                request_content = process_file(file_path)
+                request_content = read_request_file(file_path)
                 process_request(request_content, args.verbose, args.http)
     elif os.path.isfile(args.path):
         # If it's a single file, process it directly
-        request_content = process_file(args.path)
+        request_content = read_request_file(args.path)
         process_request(request_content, args.verbose, args.http)
     else:
-        print(f"The specified path does not exist: {args.path}")
+        print(f"The specified file or directory does not exist: {args.path}")
 
 
 
