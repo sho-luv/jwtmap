@@ -93,24 +93,47 @@ def determine_request_type(request: str) -> RequestType:
     else:
         raise ValueError("Unknown request type")
 
-def execute_request(request: str, http: bool) -> requests.Response:
+def add_jwtmap_cookie(request: str, cookie_value: str) -> str:
     """
-    Executes a given request based on its type (curl command or HTTP request).
+    Adds a jwtmap cookie to the headers of an HTTP request.
 
     Args:
-        request (str): The request to be executed.
-        http (bool): Flag indicating whether to use HTTP instead of HTTPS.
+        request (str): The HTTP request string or a curl command.
+        cookie_value (str): The cookie_value token to be added to the headers.
 
     Returns:
-        requests.Response: The response from the server.
+        str: The modified request with the new jwtmap cookie added to the headers.
     """
-    request_type = determine_request_type(request)
-    if request_type == RequestType.CURL:
-        return execute_curl_command(request, http)
-    elif request_type == RequestType.HTTP:
-        return execute_http_request(request, http)
+    cookie_name = "jwtmap"  # Define the name of the cookie to be used
+    
+    if is_curl_command(request):
+        # If the request is a curl command, add or update the 'Cookie' header
+        if "-H '{cookie_name}:" in request or '-H "{cookie_name}:' in request:
+            # If a Cookie header already exists, append the JWT cookie to it
+            modified_request = re.sub(
+                r"(-H\s*['\"]{cookie_name}:\s*)([^'\"\s]+)(['\"])", 
+                lambda match: f"{match.group(1)}{match.group(2)}; {cookie_value}{match.group(3)}", 
+                request, 
+                flags=re.IGNORECASE)
+        else:
+            # If no Cookie header exists, add one
+            modified_request = request.rstrip() + f' -H "{cookie_name}: {cookie_value}"'
     else:
-        raise ValueError("Unsupported request type")
+        # If the request is an HTTP request format, add or update the 'Cookie' header
+        if "{cookie_name}:" in request:
+            # If a Cookie header already exists, append the JWT cookie to it
+            modified_request = re.sub(
+                rf"({cookie_name}:\s*)([^'\s]+)",  # Corrected the regex pattern
+                lambda match: f"{match.group(1)}{match.group(2)}; {cookie_value}", 
+                request, 
+                flags=re.IGNORECASE)
+        else:
+            # Insert a Cookie header into the request
+            headers_end = request.index("\n")  # Find end of the start line (e.g., GET / HTTP/1.1)
+            modified_request = request[:headers_end + 1] + f"{cookie_name}: {cookie_value}\n" + request[headers_end + 1:]
+
+    return modified_request
+
 
 def invalidate_jwt(jwt):
     header, payload, signature = jwt.split('.')
@@ -148,7 +171,7 @@ def is_curl_command(line: str) -> bool:
 def is_http_request(line: str) -> bool:
     return line.startswith("GET ") or line.startswith("POST ") or line.startswith("PUT ") or line.startswith("DELETE ")
 
-def execute_curl_command(command: str, http: bool) -> Tuple[Optional[requests.Response], Dict[str, str]]:
+def execute_curl_command(command: str, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> Tuple[Optional[httpx.Response], Dict[str, str]]:
     try:
         # Preprocess command to handle shell-like syntax correctly
         command = command.replace("$'", "'")
@@ -162,10 +185,7 @@ def execute_curl_command(command: str, http: bool) -> Tuple[Optional[requests.Re
         url = ""
         headers = {}
         payload = None
-        if http:
-            scheme = 'http'
-        else:
-            scheme = 'https'  # Default to HTTPS
+        scheme = 'http' if use_http else 'https'  # Determine the protocol based on the use_http flag
 
         # Process each part of the command
         for i, part in enumerate(parts):
@@ -190,27 +210,19 @@ def execute_curl_command(command: str, http: bool) -> Tuple[Optional[requests.Re
         if not url:
             raise ValueError("URL not found in the curl command.")
 
-        # print(f"URL: {url}")
-        # print(f"Method: {method}")
-        # print("Headers:")
-        # for key, value in headers.items():
-        #     print(f"    {key}: {value}")
-        # print(headers)
-        # if payload:
-        #     print(f"Payload: {payload}")
+        proxies = {"http": proxy, "https": proxy} if proxy else None
 
         # Perform the request
-        response = requests.request(method, url, headers=headers, data=payload)
+        response = httpx.request(method, url, headers=headers, data=payload, proxies=proxies)
 
         return response, headers
 
-    except requests.exceptions.ConnectionError as e:
+    except httpx.RequestError as e:
         print(f"[red]Error: Unable to connect to the URL {url}. Please check your network connection and ensure the URL is correct.[/red]")
         return None, None
 
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         print(f"[bold red]Error:[/bold red] An error occurred while making the request to {url}. {str(e)}")
-        print(f"[red]Error: An error occurred while making the request to {url}. {str(e)}[/red]")
         return None, None
 
 def get_jwt_from_request(request: str) -> Optional[str]:
@@ -243,194 +255,80 @@ def remove_jwt_from_request(request: str) -> str:
         return modified_request
     return request
 
-def execute_http_request(request: str, http: bool) -> Tuple[Optional[httpx.Response], Dict[str, str]]:
+def execute_http_request(request: str, use_http: bool, proxy: Optional[str] = None) -> Tuple[Optional[httpx.Response], Dict[str, str]]:
     """
     Executes an HTTP request based on the provided request string.
 
     Args:
         request (str): The HTTP request string.
-        http (bool): A flag indicating whether to use HTTP or HTTPS.
+        use_http (bool): A flag indicating whether to use HTTP or HTTPS. Defaults to HTTPS.
+        proxy (Optional[str]): A string representing the proxy URL.
 
     Returns:
         Tuple[Optional[httpx.Response], Dict[str, str]]: A tuple containing the response object and the headers.
 
     Raises:
-        ValueError: If an invalid scheme is specified in the 'Scheme' header.
-
+        ValueError: If an invalid protocol is specified in the 'Protocol' header.
     """
-    print("inside execute http request")
     try:
         lines = request.split('\n')
-        method, path, _ = lines[0].split()
+        method, path, http_version = lines[0].split()
         headers = {}
         payload = None
-        if http:
-            scheme = 'http'
-        else:
-            scheme = 'https'  # Default to HTTPS
+        protocol = 'http' if use_http else 'https'  # Determine the protocol based on the use_http flag
         
         # Find the blank line that separates headers from payload
         blank_line_index = next((i for i, line in enumerate(lines) if line.strip() == ''), len(lines))
         
-        # Extract headers and check for the Scheme header
+        # Extract headers and check for the Protocol header
         for line in lines[1:blank_line_index]:
             if ':' in line:
                 key, value = line.split(':', 1)
-                if key.strip().lower() == 'scheme':  # Custom scheme header
-                    scheme = value.strip().lower()
-                    if scheme not in ['http', 'https']:
-                        raise ValueError("Invalid scheme specified. Must be 'http' or 'https'.")
+                if key.strip().lower() == 'protocol':  # Custom protocol header
+                    protocol = value.strip().lower()
+                    if protocol not in ['http', 'https']:
+                        raise ValueError("Invalid protocol specified. Must be 'http' or 'https'.")
                 else:
                     headers[key.strip()] = value.strip()
 
-        # Ensure the 'Scheme' header doesn't get passed to the request
-        headers.pop('Scheme', None)
+        # Ensure the 'Protocol' header doesn't get passed to the request
+        # headers.pop('Protocol', None)
         
         # Extract payload if present
         if blank_line_index + 1 < len(lines):
             payload = '\n'.join(lines[blank_line_index + 1:])
         
-        url = f"{scheme}://{headers['Host']}{path}"
-        response = httpx.request(method, url, headers=headers, data=payload)
-        return response, headers
-    except httpx.HTTPStatusError as e:
-        print(f"[bold red]Error:[/bold red] An error occurred while making the request to {url}. {str(e)}")
-        return None, None
-    except httpx.RequestError as e:
-        print(f"[red]Error: Unable to connect to the URL {url}. Please check your network connection and ensure the URL is correct.[/red]")
-        return None, None
+        url = f"{protocol}://{headers['Host']}{path}"
 
-def is_jwt_required(request: str, original_response: httpx.Response, verbose: bool, http: bool) -> bool:
-    """
-    Checks if a JWT (JSON Web Token) is required for the given request.
+        response = httpx.request(method, url, headers=headers, data=payload, follow_redirects=True, proxy=proxy, verify=False)
+   
 
-    Args:
-        request (str): The original HTTP request.
-        original_response (httpx.Response): The original response received from the server.
-
-    Returns:
-        bool: True if the JWT is required, False otherwise.
-    """
-
-    modified_request = remove_jwt_from_request(request)
-    modified_response, _ = execute_request(modified_request, http)
-
-    if modified_response is not None:
-        print_request_response(modified_request, modified_response, verbose)
-
-        if original_response.status_code != modified_response.status_code:
-            print(f"Response codes do not match: {original_response.status_code} != {modified_response.status_code}")
-            return True
-
-        if 'Content-Length' in modified_response.headers and 'Content-Length' in original_response.headers:
-            if modified_response.headers['Content-Length'] != original_response.headers['Content-Length']:
-                print(f"Content lengths do not match: {modified_response.headers['Content-Length']} != {original_response.headers['Content-Length']}")
-                return True
-
-        if original_response.text != modified_response.text:
-            print("Response bodies do not match:")
-            print("Modified response body:")
-            print(modified_response.text)
-            print("Original response body:")
-            print(original_response.text)
-            return True
-
-        return False 
-
-    return True # Default to True if the modified request fails
-
-def execute_request(request: str, http: bool) -> Tuple[Optional[httpx.Response], Dict[str, str]]:
-    """
-    Executes an HTTP request based on the provided request string.
-
-    Args:
-        request (str): The HTTP request string.
-        http (bool): A flag indicating whether to use HTTP or HTTPS.
-
-    Returns:
-        Tuple[Optional[httpx.Response], Dict[str, str]]: A tuple containing the response object and the headers.
-
-    Raises:
-        ValueError: If an invalid scheme is specified in the 'Scheme' header.
-    """
-    try:
-        lines = request.split('\n')
-        method, path, _ = lines[0].split()
-        headers = {}
-        payload = None
-        scheme = 'http' if http else 'https'
-        
-        blank_line_index = next((i for i, line in enumerate(lines) if line.strip() == ''), len(lines))
-        
-        for line in lines[1:blank_line_index]:
-            if ':' in line:
-                key, value = line.split(':', 1)
-                if key.strip().lower() == 'scheme':
-                    scheme = value.strip().lower()
-                    if scheme not in ['http', 'https']:
-                        raise ValueError("Invalid scheme specified. Must be 'http' or 'https'.")
-                else:
-                    headers[key.strip()] = value.strip()
-
-        headers.pop('Scheme', None)
-        
-        if blank_line_index + 1 < len(lines):
-            payload = '\n'.join(lines[blank_line_index + 1:])
-        
-        url = f"{scheme}://{headers['Host']}{path}"
-        response = httpx.request(method, url, headers=headers, data=payload)
         return response, headers
     except httpx.RequestError as e:
         print(f"[red]Error: Unable to connect to the URL {url}. Please check your network connection and ensure the URL is correct.[/red]")
         return None, None
-    except httpx.HTTPStatusError as e:
-        print(f"[bold red]Error:[/bold red] An error occurred while making the request to {url}. {str(e)}")
-        return None, None
 
-def is_jwt_signature_checked(request: str, original_response: httpx.Response, verbose, http: bool) -> bool:
+#
+
+def execute_request(request: str, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> httpx.Response:
     """
-    Checks if the signature of a JWT (JSON Web Token) is verified by the server.
+    Executes a given request based on its type (curl command or HTTP request).
 
     Args:
-        request (str): The original HTTP request.
-        original_response (httpx.Response): The original response received from the server.
+        request (str): The request to be executed.
+        use_http (bool): Flag indicating whether to use HTTP instead of HTTPS.
+        proxy (Optional[Dict[str, str]]): A dictionary of proxies to use for the request.
 
     Returns:
-        bool: True if the JWT signature is checked, False otherwise.
+        httpx.Response: The response from the server.
     """
-
-    jwt = get_jwt_from_request(request)
-
-    if jwt is not None:
-        invalid_jwt = remove_signature_from_jwt(jwt)
-        modified_request = replace_jwt_in_request(request, invalid_jwt)
-        modified_response, _ = execute_request(modified_request, http)
+    request_type = determine_request_type(request)
+    if request_type == RequestType.CURL:
+        return execute_curl_command(request, use_http, proxy)
+    elif request_type == RequestType.HTTP:
+        return execute_http_request(request, use_http, proxy)
     else:
-        modified_response = None
-
-    if modified_response is not None:
-        print_request_response(modified_request, modified_response, verbose)
-
-        if original_response.status_code != modified_response.status_code:
-            print(f"Response codes do not match: {original_response.status_code} != {modified_response.status_code}")
-            return True
-
-        if 'Content-Length' in modified_response.headers and 'Content-Length' in original_response.headers:
-            if modified_response.headers['Content-Length'] != original_response.headers['Content-Length']:
-                print(f"Content lengths do not match: {modified_response.headers['Content-Length']} != {original_response.headers['Content-Length']}")
-                return True
-
-        if original_response.text != modified_response.text:
-            print("Response bodies do not match:")
-            print("Modified response body:")
-            print(modified_response.text)
-            print("Original response body:")
-            print(original_response.text)
-            return True
-
-        return False 
-
-    return True # Default to True if the modified request fails
+        raise ValueError("Unsupported request type")
 
 def print_request_response(request: str, response: httpx.Response, verbose: bool) -> List[Tuple[str, str]]:
     rows = []
@@ -532,7 +430,7 @@ def read_request_file(file_path: str) -> Optional[str]:
         print(f"Error opening file: {e}")
         return
 
-def process_request(request_content: str, verbose: bool, http: bool) -> None:
+def process_request(request_content: str, verbose: bool, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> None:
     """
     Process the request and perform JWT checks on the response.
 
@@ -540,6 +438,7 @@ def process_request(request_content: str, verbose: bool, http: bool) -> None:
         request_content (str): The content of the request.
         verbose (bool): Flag indicating whether to print verbose output.
         http (bool): Flag indicating whether the request is an HTTP request.
+        proxy (Optional[Dict[str, str]]): A dictionary of proxy to use for the request.
 
     Returns:
         None
@@ -551,9 +450,9 @@ def process_request(request_content: str, verbose: bool, http: bool) -> None:
 
     if curl:
     # Assuming you have a separate function to handle curl requests
-        original_response, _ = execute_request(request_content, curl)
+        original_response, _ = execute_request(request_content, use_http, proxy)
     elif http:
-        original_response, _ = execute_request(request_content, http)
+        original_response, _ = execute_request(request_content, use_http, proxy)
     else:
         print(f"Unable to identify file as a valid request. Please check {request_content} to ensure it's a valid request.")
         return
@@ -599,13 +498,13 @@ def process_request(request_content: str, verbose: bool, http: bool) -> None:
 
             print("\n[bold white]Security Checks...[/bold white]\n")
             # Check and print if JWT is required
-            if is_jwt_required(request_content, original_response, verbose, http):
+            if is_jwt_required(request_content, original_response, verbose, use_http, proxy):
                 print(f"[bold green][+] JWT is required for HTTP request to {url}[/bold green]")
             else:
                 print(f"[bold red][-] JWT not needed for HTTP request to {url}[/bold red]")
 
             # Check and print if JWT signature is checked
-            if is_jwt_signature_checked(request_content, original_response, verbose, http):
+            if is_jwt_signature_checked(request_content, original_response, verbose, use_http, proxy):
                 print(f"[bold green][+] JWT signature is checked for HTTP request to {url}[/bold green]")
             else:
                 print("[bold red][-] JWT accepted without signature! Changing JWT payloads should work![/bold red]")   
@@ -613,11 +512,106 @@ def process_request(request_content: str, verbose: bool, http: bool) -> None:
         else:
             print("No JWT Token Found")
 
+def is_jwt_required(request: str, original_response: httpx.Response, verbose: bool, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> bool:
+    """
+    Checks if a JWT (JSON Web Token) is required for the given request.
+
+    Args:
+        request (str): The original HTTP request.
+        original_response (httpx.Response): The original response received from the server.
+        verbose (bool): Flag to print verbose output.
+        use_http (bool): Flag indicating whether to use HTTP instead of HTTPS.
+        proxy (Optional[Dict[str, str]]): A dictionary of proxies to use for the request.
+
+    Returns:
+        bool: True if the JWT is required, False otherwise.
+    """
+    modified_request = remove_jwt_from_request(request)
+    modified_request = add_jwtmap_cookie(modified_request, "No-JWT-Request")
+    modified_response, _ = execute_request(modified_request, use_http, proxy)
+    
+    if modified_response is not None:
+        print_request_response(modified_request, modified_response, verbose)
+
+        if original_response.status_code != modified_response.status_code:
+            print(f"Response codes do not match: {original_response.status_code} != {modified_response.status_code}")
+            return True
+
+        if 'Content-Length' in modified_response.headers and 'Content-Length' in original_response.headers:
+            if modified_response.headers['Content-Length'] != original_response.headers['Content-Length']:
+                print(f"Content lengths do not match: {modified_response.headers['Content-Length']} != {original_response.headers['Content-Length']}")
+                return True
+
+        if original_response.text != modified_response.text:
+            print("Response bodies do not match:")
+            print("Modified response body:")
+            print(modified_response.text)
+            print("Original response body:")
+            print(original_response.text)
+            return True
+
+        return False 
+
+    return True # Default to True if the modified request fails
+
+
+
+def is_jwt_signature_checked(request: str, original_response: httpx.Response, verbose: bool, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> bool:
+    """
+    Checks if the signature of a JWT (JSON Web Token) is verified by the server.
+
+    Args:
+        request (str): The original HTTP request.
+        original_response (httpx.Response): The original response received from the server.
+        verbose (bool): Flag to print verbose output.
+        use_http (bool): Flag indicating whether to use HTTP instead of HTTPS.
+        proxy (Optional[Dict[str, str]]): A dictionary of proxies to use for the request.
+
+    Returns:
+        bool: True if the JWT signature is checked, False otherwise.
+    """
+
+    jwt = get_jwt_from_request(request)
+
+    if jwt is not None:
+        invalid_jwt = remove_signature_from_jwt(jwt)
+        modified_request = replace_jwt_in_request(request, invalid_jwt)
+        modified_request = add_jwtmap_cookie(modified_request, "Signature-checked-request")
+        modified_response, _ = execute_request(modified_request, use_http, proxy)
+    else:
+        modified_response = None
+
+    if modified_response is not None:
+        print_request_response(modified_request, modified_response, verbose)
+
+        if original_response.status_code != modified_response.status_code:
+            print(f"Response codes do not match: {original_response.status_code} != {modified_response.status_code}")
+            return True
+
+        if 'Content-Length' in modified_response.headers and 'Content-Length' in original_response.headers:
+            if modified_response.headers['Content-Length'] != original_response.headers['Content-Length']:
+                print(f"Content lengths do not match: {modified_response.headers['Content-Length']} != {original_response.headers['Content-Length']}")
+                return True
+
+        if original_response.text != modified_response.text:
+            print("Response bodies do not match:")
+            print("Modified response body:")
+            print(modified_response.text)
+            print("Original response body:")
+            print(original_response.text)
+            return True
+
+        return False 
+
+    return True # Default to True if the modified request fails
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Execute curl command or HTTP request from a file.")
     parser.add_argument("path", help="Path to the file or directory containing the curl command(s) or HTTP request(s).")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode to see the request and response.")
     parser.add_argument("--http", action="store_true", help="Check HTTP, Default is HTTPS.")
+    parser.add_argument("--proxy", help="Proxy server to use for requests in the format http://user:pass@host:port")
+
     args = parser.parse_args()
 
 
@@ -628,11 +622,12 @@ def main() -> None:
             if os.path.isfile(file_path):  # Ensuring it's a file
                 print(f"\nProcessing {file_path}...")
                 request_content = read_request_file(file_path)
-                process_request(request_content, args.verbose, args.http)
+                process_request(request_content, args.verbose, args.http, args.proxy)
     elif os.path.isfile(args.path):
         # If it's a single file, process it directly
         request_content = read_request_file(args.path)
-        process_request(request_content, args.verbose, args.http)
+        process_request(request_content, args.verbose, args.http, args.proxy)
+
     else:
         print(f"The specified file or directory does not exist: {args.path}")
 
