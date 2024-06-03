@@ -134,7 +134,6 @@ def add_jwtmap_cookie(request: str, cookie_value: str) -> str:
 
     return modified_request
 
-
 def invalidate_jwt(jwt):
     header, payload, signature = jwt.split('.')
     # Decode and alter the payload
@@ -170,6 +169,9 @@ def is_curl_command(line: str) -> bool:
 
 def is_http_request(line: str) -> bool:
     return line.startswith("GET ") or line.startswith("POST ") or line.startswith("PUT ") or line.startswith("DELETE ")
+
+def is_burp_xml(line: str) -> bool:
+    return line.startswith("<?xml version=")
 
 def execute_curl_command(command: str, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> Tuple[Optional[httpx.Response], Dict[str, str]]:
     try:
@@ -308,8 +310,6 @@ def execute_http_request(request: str, use_http: bool, proxy: Optional[str] = No
         print(f"[red]Error: Unable to connect to the URL {url}. Please check your network connection and ensure the URL is correct.[/red]")
         return None, None
 
-#
-
 def execute_request(request: str, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> httpx.Response:
     """
     Executes a given request based on its type (curl command or HTTP request).
@@ -379,8 +379,8 @@ def print_jwt(request: str) -> List[Tuple[str, str]]:
     
     return rows    
 
-# Function to convert Unix timestamp to readable date in UTC
 def timestamp_to_utc(ts):
+    # Function to convert Unix timestamp to readable date in UTC
     return datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S (UTC)')
 
 def timestamp_to_local(timestamp, timezone_str='America/Los_Angeles'):
@@ -430,6 +430,33 @@ def read_request_file(file_path: str) -> Optional[str]:
         print(f"Error opening file: {e}")
         return
 
+def process_burp_xml(lines: str) -> None:
+    
+    output_directory = "burp_requests"
+    # Create output directory if it doesn't exist
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
+    # Regular expression to find base64 encoded data
+    base64_pattern = re.compile(r'<request(?: method="GET")? base64="true"><!\[CDATA\[(.*?)\]\]></request>')
+
+    lines = lines.split('\n')
+    #print(f"lines: {lines}")
+    for line_number, line in enumerate(lines):
+        match = base64_pattern.search(line)
+        if match:
+            base64_data = match.group(1)
+            decoded_data = base64.b64decode(base64_data).decode('utf-8')
+
+            # Create a file name based on line number
+            output_filename = os.path.join(output_directory, f'request_{line_number}.txt')
+
+            # Write the decoded data to the file
+            print(f"Writing decoded data to {output_filename}")
+            with open(output_filename, 'w') as output_file:
+                output_file.write(decoded_data)
+
+
 def process_request(request_content: str, verbose: bool, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> None:
     """
     Process the request and perform JWT checks on the response.
@@ -447,12 +474,16 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
     original_response, _ = None, {}
     curl = is_curl_command(request_content)
     http = is_http_request(request_content)
+    burp = is_burp_xml(request_content)
 
     if curl:
     # Assuming you have a separate function to handle curl requests
         original_response, _ = execute_request(request_content, use_http, proxy)
     elif http:
         original_response, _ = execute_request(request_content, use_http, proxy)
+    elif burp:
+        process_burp_xml(request_content)
+
     else:
         print(f"Unable to identify file as a valid request. Please check {request_content} to ensure it's a valid request.")
         return
@@ -494,6 +525,8 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
                     print(f"[bold red][-] TOKEN IS EXPIRED![/bold red] Token has been expired for {expired_duration}")
                 else:
                     print("[bold green][+] TOKEN IS STILL VALID![/bold green]")
+            else:
+                print("[bold red][-] JWT does not contain an expiration timestamp![/bold red]")
 
 
             print("\n[bold white]Security Checks...[/bold white]\n")
@@ -534,7 +567,8 @@ def is_jwt_required(request: str, original_response: httpx.Response, verbose: bo
         print_request_response(modified_request, modified_response, verbose)
 
         if original_response.status_code != modified_response.status_code:
-            print(f"Response codes do not match: {original_response.status_code} != {modified_response.status_code}")
+            if verbose:
+                print(f"Response codes do not match: {original_response.status_code} != {modified_response.status_code}")
             return True
 
         if 'Content-Length' in modified_response.headers and 'Content-Length' in original_response.headers:
@@ -553,8 +587,6 @@ def is_jwt_required(request: str, original_response: httpx.Response, verbose: bo
         return False 
 
     return True # Default to True if the modified request fails
-
-
 
 def is_jwt_signature_checked(request: str, original_response: httpx.Response, verbose: bool, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> bool:
     """
@@ -585,7 +617,8 @@ def is_jwt_signature_checked(request: str, original_response: httpx.Response, ve
         print_request_response(modified_request, modified_response, verbose)
 
         if original_response.status_code != modified_response.status_code:
-            print(f"Response codes do not match: {original_response.status_code} != {modified_response.status_code}")
+            if verbose:
+                print(f"Response codes do not match: {original_response.status_code} != {modified_response.status_code}")
             return True
 
         if 'Content-Length' in modified_response.headers and 'Content-Length' in original_response.headers:
