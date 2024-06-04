@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+
 import re
 import os
 import json
@@ -400,7 +402,15 @@ def format_time_difference(iat, exp):
     difference = exp - iat
     time_diff = timedelta(seconds=difference)
     hours, remainder = divmod(time_diff.total_seconds(), 3600)
-    minutes, _ = divmod(remainder, 60)
+    minutes, seconds = divmod(remainder, 60)
+
+    if seconds > 0:
+        minutes += 1
+
+    if minutes == 60:
+        hours += 1
+        minutes = 0
+
     if hours > 0:
         return f"{int(hours)} hours {int(minutes)} mins"
     return f"{int(minutes)} mins"
@@ -479,6 +489,8 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
     http = is_http_request(request_content)
     burp = is_burp_xml(request_content)
 
+
+
     if curl:
     # Assuming you have a separate function to handle curl requests
         original_response, _ = execute_request(request_content, use_http, proxy)
@@ -486,11 +498,15 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
         original_response, _ = execute_request(request_content, use_http, proxy)
     elif burp:
         process_burp_xml(request_content)
-    elif jwt:
-        print(f"JWT: {jwt}")
     else:
         print(f"Unable to identify file as a valid request. Please check {request_content} to ensure it's a valid request.")
         return
+
+
+    print("\n[bold white]Security Checks...[/bold white]\n")
+
+   
+
 
     # Only proceed with JWT checks if the original response was successfully obtained
     if original_response:
@@ -500,19 +516,18 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
         if jwt_token:
             process_jwt(jwt_token, verbose)
 
-            print("\n[bold white]Security Checks...[/bold white]\n")
+
             # Check and print if JWT is required
             if is_jwt_required(request_content, original_response, verbose, use_http, proxy):
-                print(f"[bold green][+] JWT is required for HTTP request to {url}[/bold green]")
+                print(f"[bold green][+] JWT is required for HTTP request to [/bold green]{url}")
             else:
-                print(f"[bold red][-] JWT not needed for HTTP request to {url}[/bold red]")
+                print(f"[bold red][-] JWT not needed for HTTP request to [/bold red]{url}")
 
             # Check and print if JWT signature is checked
             if is_jwt_signature_checked(request_content, original_response, verbose, use_http, proxy):
-                print(f"[bold green][+] JWT signature is checked for HTTP request to {url}[/bold green]")
+                print(f"[bold green][+] JWT signature is checked for HTTP request to [/bold green]{url}")
             else:
                 print("[bold red][-] JWT accepted without signature! Changing JWT payloads should work![/bold red]")   
-        
         else:
             print("No JWT Token Found")
 
@@ -560,6 +575,54 @@ def process_jwt(jwt_token: str, verbose: bool) -> None:
             print("[bold green][+] TOKEN IS STILL VALID![/bold green]")
     else:
         print("[bold red][-] JWT does not contain an expiration timestamp![/bold red]")
+
+def is_crackable_encryption(jwt: str) -> str:
+    """
+    Checks if the encryption type of a JWT (JSON Web Token) is crackable.
+
+    Args:
+        jwt (str): The JWT token as a string.
+
+    Returns:
+        str: The encryption type if it is crackable, an empty string otherwise.
+    """
+    encryption_type = get_jwt_encryption_type(jwt)
+    if encryption_type:
+        # Dictionary mapping encryption types to their corresponding values
+        crackable_encryptions = {
+            'hs256': 'HMAC-SHA256',
+            'hs384': 'HMAC-SHA384',
+            'hs512': 'HMAC-SHA512'
+        }
+        
+        if encryption_type.lower() == 'none':
+            return 'No-Encryption'
+        else:
+            return crackable_encryptions.get(encryption_type.lower(), '')
+    return None
+
+def crack_jwt_encryption(jwt_token: str) -> None:
+    """
+    Checks if the encryption type of a JWT (JSON Web Token) is crackable and prints the corresponding hashcat or john command.
+
+    Args:
+        jwt (str): The JWT token as a string.
+
+    Returns:
+        None
+    """
+    
+    # Check if the JWT encryption is crackable
+    jwt_encryption = is_crackable_encryption(jwt_token)
+    if jwt_encryption:
+        if jwt_encryption == 'No-Encryption':
+            print("[bold red][-] JWT using no encryption.[/bold red][yellow] This means you can change anything in the token you want![/yellow]")
+        else:
+            print("[bold red][-] JWT using pre shared key encryption.[/bold red][yellow] This we may be able to crack key used to sign it![/yellow]")
+            print(f"[yellow][+] john jwt.txt --format={jwt_encryption}[/yellow]")
+            print(f"[yellow][+] hashcat -a 0 -m 16500 {jwt_token} /usr/share/wordlists/[/yellow]")
+    else:
+        print(f"[bold green][+] JWT using asymmetric encryption [/bold green]{get_jwt_encryption_type(jwt_token)}[bold green] aka not crackable[/bold green]")
 
 
 def is_jwt_required(request: str, original_response: httpx.Response, verbose: bool, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> bool:
@@ -670,6 +733,11 @@ def main() -> None:
 
     if jwt_token:
         process_jwt(args.path, args.verbose)
+         # Check if the JWT encryption is crackable
+        jwt_encryption = is_crackable_encryption(args.path)
+        if jwt_encryption:
+            print("\n[bold white]Security Checks...[/bold white]\n")
+            crack_jwt_encryption(args.path)
         return
     
     if os.path.isdir(args.path):
