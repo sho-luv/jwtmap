@@ -567,6 +567,13 @@ def process_jwt(jwt_token: str, verbose: bool) -> None:
         token_validity = format_time_difference(issued_at, expiration)
         print(f"[green][+][/green] JWT Token valid for {token_validity}")
 
+        five_hours = timedelta(hours=5)
+        issued_at_datetime = datetime.fromtimestamp(issued_at)
+        expiration_datetime = datetime.fromtimestamp(expiration)
+        if expiration_datetime - issued_at_datetime > five_hours:
+            print(f"[bold red][+] JWT Token valid for more than 5 hours[/bold red]")  
+
+        
         # Check if the token is expired
         if expiration < current_timestamp:
             expired_duration = format_expired_time(expiration, current_timestamp)
