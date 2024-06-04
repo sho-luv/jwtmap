@@ -51,10 +51,12 @@ class Token:
         decoded_str = decoded_bytes.decode('utf-8')
         return json.loads(decoded_str)
 
-def parse_jwt(jwt: str) -> Token:
+def parse_jwt(jwt: str, verbose: bool = False) -> Optional[Token]:
     parts = jwt.split('.')
     if len(parts) != 3:
-        raise ValueError("Invalid JWT format. JWT should have 3 parts separated by '.'")
+        if verbose:
+            print("Invalid JWT format. JWT should have 3 parts separated by '.'")
+        return None
     return Token(parts[0], parts[1], parts[2])
 
 def get_jwt_encryption_type(jwt: str) -> Optional[str]:
@@ -242,8 +244,10 @@ def get_jwt_from_request(request: str) -> Optional[str]:
         request = request.replace("$'", "'")
         request = request.replace('\\"', '"')
         jwt_match = re.search(r"-H\s*[\"']?Authorization:\s*Bearer\s*([^'\"\s]+)[\"']?", request, re.IGNORECASE)
-    else:
+    elif is_http_request(request):
         jwt_match = re.search(r"Authorization:\s*Bearer\s*(.*)", request, re.IGNORECASE)
+    else:
+        jwt_match = re.search('eyJ[A-Za-z0-9_\/+-]*\.eyJ[A-Za-z0-9_\/+-]*\.[A-Za-z0-9._\/+-]*', request, re.IGNORECASE)
 
     if jwt_match:
         return jwt_match.group(1)
@@ -456,7 +460,6 @@ def process_burp_xml(lines: str) -> None:
             with open(output_filename, 'w') as output_file:
                 output_file.write(decoded_data)
 
-
 def process_request(request_content: str, verbose: bool, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> None:
     """
     Process the request and perform JWT checks on the response.
@@ -483,7 +486,8 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
         original_response, _ = execute_request(request_content, use_http, proxy)
     elif burp:
         process_burp_xml(request_content)
-
+    elif jwt:
+        print(f"JWT: {jwt}")
     else:
         print(f"Unable to identify file as a valid request. Please check {request_content} to ensure it's a valid request.")
         return
@@ -494,40 +498,7 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
         print(f"\n[green][+] URL:[/green] {url}")
         jwt_token = get_jwt_from_request(request_content)
         if jwt_token:
-            print("[green][+] JWT:[/green]", jwt_token)
-            my_token = parse_jwt(jwt_token)
-            print("\n[bold white]Token Header Values...[/bold white]\n")            
-            for key, value in my_token.decoded_header.items():
-                print(f"[green][+][/green] {key} = \"{value}\"")
-
-            print("\n[bold white]Token Payload Values...[/bold white]\n")
-            for key, value in my_token.decoded_payload.items():
-                if key == "exp" or key == "iat" or key == "nbf":
-                    print(f"[green][+][/green] {key} = {value} ==> TIMESTAMP = {timestamp_to_local(value)}")
-                else:       
-                    print(f"[green][+][/green] {key} = \"{value}\"")
-
-            if 'exp' in my_token.decoded_payload:
-                print("\n[bold white]Expiration Timestamps...[/bold white]\n")
-                current_timestamp = int(datetime.now().timestamp())
-                issued_at = my_token.decoded_payload.get('iat', 0)
-                expiration = my_token.decoded_payload['exp']
-                print(f"[green][+][/green] Issued JWT timestamp: {issued_at} ==> {timestamp_to_local(issued_at)}")
-                print(f"[green][+][/green] Expiration date of JWT: {expiration} ==> {timestamp_to_local(expiration)}")
-                print(f"[green][+][/green] Current date and time: {current_timestamp} ==> {timestamp_to_local(current_timestamp)}")
-                
-                token_validity = format_time_difference(issued_at, expiration)
-                print(f"[green][+][/green] JWT Token valid for {token_validity}")
-
-                # Check if the token is expired
-                if expiration < current_timestamp:
-                    expired_duration = format_expired_time(expiration, current_timestamp)
-                    print(f"[bold red][-] TOKEN IS EXPIRED![/bold red] Token has been expired for {expired_duration}")
-                else:
-                    print("[bold green][+] TOKEN IS STILL VALID![/bold green]")
-            else:
-                print("[bold red][-] JWT does not contain an expiration timestamp![/bold red]")
-
+            process_jwt(jwt_token, verbose)
 
             print("\n[bold white]Security Checks...[/bold white]\n")
             # Check and print if JWT is required
@@ -544,6 +515,52 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
         
         else:
             print("No JWT Token Found")
+
+def process_jwt(jwt_token: str, verbose: bool) -> None:
+    """
+    Process the JWT token and print the details.
+
+    Args:
+        jwt (str): The JWT token to be processed.
+
+    Returns:
+        None
+    """
+    if verbose:
+        print("[green][+] JWT:[/green]", jwt_token)
+    my_token = parse_jwt(jwt_token, verbose)
+    print("\n[bold white]Token Header Values...[/bold white]\n")            
+    for key, value in my_token.decoded_header.items():
+        print(f"[green][+][/green] {key} = \"{value}\"")
+
+    print("\n[bold white]Token Payload Values...[/bold white]\n")
+    for key, value in my_token.decoded_payload.items():
+        if key == "exp" or key == "iat" or key == "nbf":
+            print(f"[green][+][/green] {key} = {value} ==> TIMESTAMP = {timestamp_to_local(value)}")
+        else:       
+            print(f"[green][+][/green] {key} = \"{value}\"")
+
+    if 'exp' in my_token.decoded_payload:
+        print("\n[bold white]Expiration Timestamps...[/bold white]\n")
+        current_timestamp = int(datetime.now().timestamp())
+        issued_at = my_token.decoded_payload.get('iat', 0)
+        expiration = my_token.decoded_payload['exp']
+        print(f"[green][+][/green] Issued JWT timestamp: {issued_at} ==> {timestamp_to_local(issued_at)}")
+        print(f"[green][+][/green] Expiration date of JWT: {expiration} ==> {timestamp_to_local(expiration)}")
+        print(f"[green][+][/green] Current date and time: {current_timestamp} ==> {timestamp_to_local(current_timestamp)}")
+        
+        token_validity = format_time_difference(issued_at, expiration)
+        print(f"[green][+][/green] JWT Token valid for {token_validity}")
+
+        # Check if the token is expired
+        if expiration < current_timestamp:
+            expired_duration = format_expired_time(expiration, current_timestamp)
+            print(f"[bold red][-] TOKEN IS EXPIRED![/bold red] Token has been expired for {expired_duration}")
+        else:
+            print("[bold green][+] TOKEN IS STILL VALID![/bold green]")
+    else:
+        print("[bold red][-] JWT does not contain an expiration timestamp![/bold red]")
+
 
 def is_jwt_required(request: str, original_response: httpx.Response, verbose: bool, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> bool:
     """
@@ -573,7 +590,8 @@ def is_jwt_required(request: str, original_response: httpx.Response, verbose: bo
 
         if 'Content-Length' in modified_response.headers and 'Content-Length' in original_response.headers:
             if modified_response.headers['Content-Length'] != original_response.headers['Content-Length']:
-                print(f"Content lengths do not match: {modified_response.headers['Content-Length']} != {original_response.headers['Content-Length']}")
+                if verbose:
+                    print(f"Content lengths do not match: {modified_response.headers['Content-Length']} != {original_response.headers['Content-Length']}")
                 return True
 
         if original_response.text != modified_response.text:
@@ -618,12 +636,13 @@ def is_jwt_signature_checked(request: str, original_response: httpx.Response, ve
 
         if original_response.status_code != modified_response.status_code:
             if verbose:
-                print(f"Response codes do not match: {original_response.status_code} != {modified_response.status_code}")
+                print(f"JWT signature check: Response codes do not match: {original_response.status_code} != {modified_response.status_code}")
             return True
 
         if 'Content-Length' in modified_response.headers and 'Content-Length' in original_response.headers:
             if modified_response.headers['Content-Length'] != original_response.headers['Content-Length']:
-                print(f"Content lengths do not match: {modified_response.headers['Content-Length']} != {original_response.headers['Content-Length']}")
+                if verbose:
+                  print(f"Content lengths do not match: {modified_response.headers['Content-Length']} != {original_response.headers['Content-Length']}")
                 return True
 
         if original_response.text != modified_response.text:
@@ -647,7 +666,12 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    jwt_token = parse_jwt(args.path, args.verbose)
 
+    if jwt_token:
+        process_jwt(args.path, args.verbose)
+        return
+    
     if os.path.isdir(args.path):
         # If it's a directory, iterate over each file in the directory
         for filename in os.listdir(args.path):
@@ -660,7 +684,6 @@ def main() -> None:
         # If it's a single file, process it directly
         request_content = read_request_file(args.path)
         process_request(request_content, args.verbose, args.http, args.proxy)
-
     else:
         print(f"The specified file or directory does not exist: {args.path}")
 
