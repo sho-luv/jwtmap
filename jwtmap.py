@@ -503,7 +503,6 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
         return
 
 
-    print("\n[bold white]Security Checks...[/bold white]\n")
 
    
 
@@ -516,6 +515,10 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
         if jwt_token:
             process_jwt(jwt_token, verbose)
 
+            print("\n[bold white]Security Checks...[/bold white]\n")
+
+            
+            crack_jwt_encryption(jwt_token)
 
             # Check and print if JWT is required
             if is_jwt_required(request_content, original_response, verbose, use_http, proxy):
