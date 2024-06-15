@@ -8,7 +8,6 @@ import httpx
 import shlex
 import base64
 import argparse
-import requests
 import importlib.util
 from textwrap import dedent
 from enum import Enum, auto
@@ -27,6 +26,7 @@ else:
 
 #  todo - check entire request and response for JWTs
 #  todo - check for JWT in headers and body
+
 
 class RequestType(Enum):
     CURL = auto()
@@ -633,7 +633,6 @@ def crack_jwt_encryption(jwt_token: str) -> None:
             print(f"[yellow][+] hashcat -a 0 -m 16500 {jwt_token} /usr/share/wordlists/[/yellow]")
     else:
         print(f"[bold green][+] JWT using asymmetric encryption [/bold green]{get_jwt_encryption_type(jwt_token)}[bold green] aka not crackable[/bold green]")
-
 
 def is_jwt_required(request: str, original_response: httpx.Response, verbose: bool, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> bool:
     """
