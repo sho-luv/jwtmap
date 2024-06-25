@@ -297,7 +297,7 @@ def execute_http_request(request: str, use_http: bool, proxy: Optional[str] = No
                     if protocol not in ['http', 'https']:
                         raise ValueError("Invalid protocol specified. Must be 'http' or 'https'.")
                 else:
-                    headers[key.strip()] = value.strip()
+                    headers[key.strip().lower()] = value.strip()
 
         # Ensure the 'Protocol' header doesn't get passed to the request
         # headers.pop('Protocol', None)
@@ -306,12 +306,12 @@ def execute_http_request(request: str, use_http: bool, proxy: Optional[str] = No
         if blank_line_index + 1 < len(lines):
             payload = '\n'.join(lines[blank_line_index + 1:])
         
-        url = f"{protocol}://{headers['Host']}{path}"
+        url = f"{protocol}://{headers['host']}{path}"
 
         response = httpx.request(method, url, headers=headers, data=payload, follow_redirects=True, proxy=proxy, verify=False)
    
-
         return response, headers
+    
     except httpx.RequestError as e:
         print(f"[red]Error: Unable to connect to the URL {url}. Please check your network connection and ensure the URL is correct.[/red]")
         return None, None
@@ -489,8 +489,6 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
     http = is_http_request(request_content)
     burp = is_burp_xml(request_content)
 
-
-
     if curl:
     # Assuming you have a separate function to handle curl requests
         original_response, _ = execute_request(request_content, use_http, proxy)
@@ -501,11 +499,6 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
     else:
         print(f"Unable to identify file as a valid request. Please check {request_content} to ensure it's a valid request.")
         return
-
-
-
-   
-
 
     # Only proceed with JWT checks if the original response was successfully obtained
     if original_response:
