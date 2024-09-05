@@ -62,6 +62,12 @@ def parse_jwt(jwt: str, verbose: bool = False) -> Optional[Token]:
         return None
     return Token(parts[0], parts[1], parts[2])
 
+# Helper function to check if input is a JWT 
+def is_jwt(input_string: str) -> bool:
+    parts = input_string.split('.')
+    return len(parts) == 3  # Simple check if it's a valid-looking JWT (header, payload, signature)
+
+
 def get_jwt_encryption_type(jwt: str) -> Optional[str]:
     """
     Extracts the encryption type (algorithm) from a JWT token.
@@ -738,9 +744,8 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    jwt_token = parse_jwt(args.path, args.verbose)
-
-    if jwt_token:
+    # Check if the input path is a JWT token
+    if is_jwt(args.path):
         process_jwt(args.path, args.verbose)
          # Check if the JWT encryption is crackable
         jwt_encryption = is_crackable_encryption(args.path)
