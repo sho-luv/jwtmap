@@ -24,6 +24,7 @@ if rich_installed:
 else:
     console = None
 
+#  I used httpx over requests for HTTP2 support
 #  todo - check entire request and response for JWTs
 #  todo - check for JWT in headers and body
 
@@ -489,8 +490,6 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
     http = is_http_request(request_content)
     burp = is_burp_xml(request_content)
 
-
-
     if curl:
     # Assuming you have a separate function to handle curl requests
         original_response, _ = execute_request(request_content, use_http, proxy)
@@ -501,10 +500,6 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
     else:
         print(f"Unable to identify file as a valid request. Please check {request_content} to ensure it's a valid request.")
         return
-
-
-
-   
 
 
     # Only proceed with JWT checks if the original response was successfully obtained
