@@ -428,14 +428,19 @@ def format_time_difference(iat, exp):
         return f"{int(hours)} hours {int(minutes)} mins"
     return f"{int(minutes)} mins"
 
-def format_expired_time(exp, current_timestamp):
-    difference = current_timestamp - exp
-    time_diff = timedelta(seconds=difference)
-    hours, remainder = divmod(time_diff.total_seconds(), 3600)
-    minutes, _ = divmod(remainder, 60)
-    if hours > 0:
-        return f"{int(hours)} hours {int(minutes)} mins"
-    return f"{int(minutes)} mins"
+def format_expired_time(expiration, current_timestamp):
+    # Calculate the time difference
+    delta = current_timestamp - expiration
+    
+    # Use timedelta to convert the time difference into days, hours, and minutes
+    expired_duration = timedelta(seconds=delta)
+    
+    days = expired_duration.days
+    hours, remainder = divmod(expired_duration.seconds, 3600)
+    minutes = remainder // 60
+    
+    return f"{days} days, {hours} hours, and {minutes} minutes"
+
 
 def read_request_file(file_path: str) -> Optional[str]:
     """
@@ -574,7 +579,7 @@ def process_jwt(jwt_token: str, verbose: bool) -> None:
         print(f"[green][+][/green] Current date and time: {current_timestamp} ==> {timestamp_to_local(current_timestamp)}")
         
         token_validity = format_time_difference(issued_at, expiration)
-        print(f"[green][+][/green] JWT Token valid for {token_validity}")
+        print(f"[green][+][/green] JWT Token valid for {token_validity} ({format_expired_time(issued_at, expiration)})")
 
         five_hours = timedelta(hours=5)
         issued_at_datetime = datetime.fromtimestamp(issued_at)
@@ -634,7 +639,7 @@ def crack_jwt_encryption(jwt_token: str) -> None:
         if jwt_encryption == 'No-Encryption':
             print("[bold red][!] JWT using no encryption.[/bold red][yellow] This means you can change anything in the token you want![/yellow]")
         else:
-            print("[bold red][!] JWT using pre shared key encryption.[/bold red][yellow] This we may be able to crack key used to sign it![/yellow]")
+            print("[bold red][!] JWT is using pre-shared key encryption.[/bold red][yellow] We might be able to crack the key used to sign it![/yellow]")
             print(f"[yellow][+] john jwt.txt --format={jwt_encryption}[/yellow]")
             print(f"[yellow][+] hashcat -a 0 -m 16500 {jwt_token} /usr/share/wordlists/[/yellow]")
     else:
