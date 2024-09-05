@@ -298,7 +298,7 @@ def execute_http_request(request: str, use_http: bool, proxy: Optional[str] = No
                     if protocol not in ['http', 'https']:
                         raise ValueError("Invalid protocol specified. Must be 'http' or 'https'.")
                 else:
-                    headers[key.strip()] = value.strip()
+                    headers[key.strip().lower()] = value.strip()
 
         # Ensure the 'Protocol' header doesn't get passed to the request
         # headers.pop('Protocol', None)
@@ -307,12 +307,18 @@ def execute_http_request(request: str, use_http: bool, proxy: Optional[str] = No
         if blank_line_index + 1 < len(lines):
             payload = '\n'.join(lines[blank_line_index + 1:])
         
-        url = f"{protocol}://{headers['Host']}{path}"
+        # Set the Content-Length header
+        if payload is not None:
+            headers['content-length'] = str(len(payload))
+        else:
+            headers['content-length'] = '0'
+
+        url = f"{protocol}://{headers['host']}{path}"
 
         response = httpx.request(method, url, headers=headers, data=payload, follow_redirects=True, proxy=proxy, verify=False)
    
-
         return response, headers
+    
     except httpx.RequestError as e:
         print(f"[red]Error: Unable to connect to the URL {url}. Please check your network connection and ensure the URL is correct.[/red]")
         return None, None
@@ -501,7 +507,6 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
         print(f"Unable to identify file as a valid request. Please check {request_content} to ensure it's a valid request.")
         return
 
-
     # Only proceed with JWT checks if the original response was successfully obtained
     if original_response:
         url = original_response.url
@@ -519,13 +524,13 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
             if is_jwt_required(request_content, original_response, verbose, use_http, proxy):
                 print(f"[bold green][+] JWT is required for HTTP request to [/bold green]{url}")
             else:
-                print(f"[bold red][-] JWT not needed for HTTP request to [/bold red]{url}")
+                print(f"[bold red][!] JWT not needed for HTTP request to [/bold red]{url}")
 
             # Check and print if JWT signature is checked
             if is_jwt_signature_checked(request_content, original_response, verbose, use_http, proxy):
                 print(f"[bold green][+] JWT signature is checked for HTTP request to [/bold green]{url}")
             else:
-                print("[bold red][-] JWT accepted without signature! Changing JWT payloads should work![/bold red]")   
+                print("[bold red][!] JWT accepted without signature! Changing JWT payloads should work![/bold red]")   
         else:
             print("No JWT Token Found")
 
@@ -569,17 +574,17 @@ def process_jwt(jwt_token: str, verbose: bool) -> None:
         issued_at_datetime = datetime.fromtimestamp(issued_at)
         expiration_datetime = datetime.fromtimestamp(expiration)
         if expiration_datetime - issued_at_datetime > five_hours:
-            print(f"[bold red][+] JWT Token valid for more than 5 hours[/bold red]")  
+            print(f"[bold red][!] JWT Token valid for more than 5 hours[/bold red]")  
 
         
         # Check if the token is expired
         if expiration < current_timestamp:
             expired_duration = format_expired_time(expiration, current_timestamp)
-            print(f"[bold red][-] TOKEN IS EXPIRED![/bold red] Token has been expired for {expired_duration}")
+            print(f"[bold red][!] TOKEN IS EXPIRED![/bold red] Token has been expired for {expired_duration}")
         else:
             print("[bold green][+] TOKEN IS STILL VALID![/bold green]")
     else:
-        print("[bold red][-] JWT does not contain an expiration timestamp![/bold red]")
+        print("[bold red][!] JWT does not contain an expiration timestamp![/bold red]")
 
 def is_crackable_encryption(jwt: str) -> str:
     """
@@ -621,9 +626,9 @@ def crack_jwt_encryption(jwt_token: str) -> None:
     jwt_encryption = is_crackable_encryption(jwt_token)
     if jwt_encryption:
         if jwt_encryption == 'No-Encryption':
-            print("[bold red][-] JWT using no encryption.[/bold red][yellow] This means you can change anything in the token you want![/yellow]")
+            print("[bold red][!] JWT using no encryption.[/bold red][yellow] This means you can change anything in the token you want![/yellow]")
         else:
-            print("[bold red][-] JWT using pre shared key encryption.[/bold red][yellow] This we may be able to crack key used to sign it![/yellow]")
+            print("[bold red][!] JWT using pre shared key encryption.[/bold red][yellow] This we may be able to crack key used to sign it![/yellow]")
             print(f"[yellow][+] john jwt.txt --format={jwt_encryption}[/yellow]")
             print(f"[yellow][+] hashcat -a 0 -m 16500 {jwt_token} /usr/share/wordlists/[/yellow]")
     else:
