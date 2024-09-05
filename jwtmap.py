@@ -7,10 +7,12 @@ import pytz
 import httpx
 import shlex
 import base64
+import asyncio
 import argparse
 import importlib.util
 from textwrap import dedent
 from enum import Enum, auto
+from ask_openai import ask_openai
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, Dict, List
 
@@ -488,7 +490,7 @@ def process_burp_xml(lines: str) -> None:
             with open(output_filename, 'w') as output_file:
                 output_file.write(decoded_data)
 
-def process_request(request_content: str, verbose: bool, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> None:
+def process_request(request_content: str, ai: bool, verbose: bool, use_http: bool, proxy: Optional[Dict[str, str]] = None) -> None:
     """
     Process the request and perform JWT checks on the response.
 
@@ -524,8 +526,12 @@ def process_request(request_content: str, verbose: bool, use_http: bool, proxy: 
         print(f"\n[green][+] URL:[/green] {url}")
         jwt_token = get_jwt_from_request(request_content)
         if jwt_token:
-            process_jwt(jwt_token, verbose)
-
+            if ai:
+                # Perform AI analysis of the JWT token
+                asyncio.run(process_and_analyze_jwt(jwt_token, verbose))
+            else:
+                process_jwt(jwt_token, verbose)        
+                
             print("\n[bold white]Security Checks...[/bold white]\n")
 
             
@@ -596,6 +602,65 @@ def process_jwt(jwt_token: str, verbose: bool) -> None:
             print("[bold green][+] TOKEN IS STILL VALID![/bold green]")
     else:
         print("[bold red][!] JWT does not contain an expiration timestamp![/bold red]")
+
+async def ask_openai_jwt_analysis(jwt_header: Dict[str, any], jwt_payload: Dict[str, any]) -> str:
+    """
+    Ask OpenAI to analyze the given JWT header and payload.
+
+    Args:
+        jwt_header (Dict[str, Any]): The decoded JWT header.
+        jwt_payload (Dict[str, Any]): The decoded JWT payload.
+
+    Returns:
+        str: The OpenAI analysis result.
+    """
+    # Format the header and payload for OpenAI analysis
+    header_details = "\n".join([f"{key}: {value}" for key, value in jwt_header.items()])
+    payload_details = "\n".join([f"{key}: {value}" if key not in ["exp", "iat", "nbf"] else f"{key}: {value} (timestamp: {timestamp_to_local(value)})" for key, value in jwt_payload.items()])
+
+    # Create a detailed question for OpenAI
+    question = (
+        "Please analyze the following JWT token. Here is the decoded header:\n\n"
+        f"{header_details}\n\n"
+        "And here is the decoded payload:\n\n"
+        f"{payload_details}\n\n"
+        "Provide insights into the structure and fields, explain any significant security issues, and evaluate the claims."
+    )
+
+    # Provide additional context to OpenAI
+    context = (
+        "Analyze the token and consider things like whether timestamps are valid, if required fields are present, "
+        "and if there are any potential security concerns. Provide a summary of the JWT's purpose based on the data."
+    )
+
+    # Send the question and context to OpenAI
+    answer = await ask_openai(question, context)
+    
+    return answer
+
+async def process_and_analyze_jwt(jwt_token: str, verbose: bool) -> None:
+    """
+    Process the JWT token, print the details, and analyze it using OpenAI.
+    
+    Args:
+        jwt_token (str): The JWT token to be processed and analyzed.
+        verbose (bool): Flag to print additional information.
+
+    Returns:
+        None
+    """
+    # Process the JWT locally
+    process_jwt(jwt_token, verbose)
+    
+    # Parse the token to get header and payload for OpenAI
+    my_token = parse_jwt(jwt_token, verbose)
+    
+    # Ask OpenAI to analyze the token (JWT Header and Payload)
+    ai_analysis = await ask_openai_jwt_analysis(my_token.decoded_header, my_token.decoded_payload)
+    
+    # Print the OpenAI analysis
+    print("\n[bold green]OpenAI Analysis of JWT:[/bold green]\n", ai_analysis)
+
 
 def is_crackable_encryption(jwt: str) -> str:
     """
@@ -747,11 +812,25 @@ def main() -> None:
     parser.add_argument("--http", action="store_true", help="Check HTTP, Default is HTTPS.")
     parser.add_argument("--proxy", help="Proxy server to use for requests in the format http://user:pass@host:port")
 
+    # New flag for AI check (OpenAI/LLM)
+    parser.add_argument("--ai", action="store_true", help="Enable AI/LLM analysis using OpenAI or other models.")
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Example logic based on the --ai flag
+    if args.ai:
+        print("AI/LLM analysis will be performed on the input.")
+
     args = parser.parse_args()
 
     # Check if the input path is a JWT token
     if is_jwt(args.path):
-        process_jwt(args.path, args.verbose)
+        if args.ai:
+            # Perform AI analysis of the JWT token
+            asyncio.run(process_and_analyze_jwt(args.path, args.verbose))
+        else:
+            process_jwt(args.path, args.verbose)
          # Check if the JWT encryption is crackable
         jwt_encryption = is_crackable_encryption(args.path)
         if jwt_encryption:
@@ -766,11 +845,11 @@ def main() -> None:
             if os.path.isfile(file_path):  # Ensuring it's a file
                 print(f"\nProcessing {file_path}...")
                 request_content = read_request_file(file_path)
-                process_request(request_content, args.verbose, args.http, args.proxy)
+                process_request(request_content, args.ai, args.verbose, args.http, args.proxy)
     elif os.path.isfile(args.path):
         # If it's a single file, process it directly
         request_content = read_request_file(args.path)
-        process_request(request_content, args.verbose, args.http, args.proxy)
+        process_request(request_content, args.ai, args.verbose, args.http, args.proxy)
     else:
         print(f"The specified file or directory does not exist: {args.path}")
 
