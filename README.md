@@ -28,10 +28,10 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Set enviroment variable:
+Set environment variable:
 
 ```
-set OPENAI_API_KEY=your-api-key-here
+export OPENAI_API_KEY=your-api-key-here
 ```
 
 ## Usage
