@@ -20,10 +20,18 @@ git clone https://github.com/yourusername/jwtmap.git
 cd jwtmap
 ```
 
-JWTMap requires several dependencies, which can be installed via pip:
+JWTMap requires several dependencies, which can be installed via pip its best to do this in an virtual enviroment:
 
 ```
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
+```
+
+Set enviroment variable:
+
+```
+set OPENAI_API_KEY=your-api-key-here
 ```
 
 ## Usage
