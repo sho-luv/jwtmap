@@ -1,3 +1,4 @@
+httpx
 openai
 pytz
 python-dotenv
